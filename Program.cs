@@ -23,6 +23,7 @@ namespace WindowsRules
         {
             public int Port;
             public String Name;
+            public String Group;
             public int webPort;
         }
         private static SettingsStruct Settings;
@@ -32,6 +33,7 @@ namespace WindowsRules
             public Byte[] IP;
             public Byte age;
             public String nodeName;
+            public String group;
         }
         private static NodeStruct[] Nodes = new NodeStruct[UNIT_MAX];
 
@@ -245,7 +247,8 @@ namespace WindowsRules
             {
                 Byte[] received = client.Receive(ref receivePoint);
                 String strdata = System.Text.Encoding.ASCII.GetString(received);
-                ProcData(receivePoint, strdata);
+                if (strdata.Length > 0)
+                    ProcData(receivePoint, strdata);
             }
         }
 
@@ -294,7 +297,11 @@ namespace WindowsRules
                 String sysMSG = msg.Substring(7);
                 if (sysMSG.Length > 9 && sysMSG.Substring(0, 9) == "Hostname=")
                 {
-                    MSGBusNodelist(RemoteHost, sysMSG.Substring(9));
+                    String parameters = sysMSG.Substring(9);
+                    String hostName = parseString(parameters, 1);
+                    //String ip = parseString(params, 2); we just take the remote ip here
+                    String group = parseString(parameters, 3);
+                    MSGBusNodelist(RemoteHost, hostName, group);
                 }
                 if (sysMSG.Length == 7 && sysMSG.Substring(0, 7) == "Refresh")
                 {
@@ -302,8 +309,8 @@ namespace WindowsRules
                 }
             }
 
-            String strLog = "UDP: " + msg;
-            log(strLog);
+            //String strLog = "UDP: " + msg;
+            //log(strLog);
             rulesProcessing(RemoteHost.Address.ToString(), FILE_RULES, msg);
         }
 
@@ -311,18 +318,24 @@ namespace WindowsRules
         {
             String msg = "MSGBUS/Hostname=";
             msg += Settings.Name;
+            msg += ",0.0.0.0,";
+            msg += Settings.Group;
+
             UDPSend(msg);
         }
 
-        static void MSGBusNodelist(IPEndPoint RemoteHost, String msg)
+        static void MSGBusNodelist(IPEndPoint RemoteHost, String msg, String group)
         {
             byte[] remoteIP = RemoteHost.Address.GetAddressBytes();
+            if (group.Length == 0)
+                group = "-";
 
             Boolean found = false;
             for (byte x = 0; x < UNIT_MAX; x++)
             {
                 if (Nodes[x].nodeName == msg)
                 {
+                    Nodes[x].group = group;
                     for (byte y = 0; y < 4; y++)
                         Nodes[x].IP[y] = remoteIP[y];
                     Nodes[x].age = 0;
@@ -337,6 +350,7 @@ namespace WindowsRules
                     if (Nodes[x].IP[0] == 0)
                     {
                         Nodes[x].nodeName = msg;
+                        Nodes[x].group = group;
                         for (byte y = 0; y < 4; y++)
                             Nodes[x].IP[y] = remoteIP[y];
                         Nodes[x].age = 0;
@@ -905,6 +919,10 @@ namespace WindowsRules
                 {
                     Settings.Name = parseString(Line, 3);
                 }
+                if (setting.Equals("Group", StringComparison.OrdinalIgnoreCase))
+                {
+                    Settings.Group = parseString(Line, 3);
+                }
                 if (setting.Equals("Port", StringComparison.OrdinalIgnoreCase))
                 {
                     Settings.Port = Convert.ToInt32(parseString(Line, 3));
@@ -1199,11 +1217,22 @@ namespace WindowsRules
 
         static void webRoot(String request, ref String reply)
         {
+            String group = "";
+            Boolean groupList = true;
+
             if (request.Length >= 5 && request.Substring(0, 5) == "?cmd=")
             {
                 String cmd = request.Substring(5);
                 ExecuteCommand("", cmd);
             }
+            if (request.Length >= 7 && request.Substring(0, 7) == "?group=")
+            {
+                group = request.Substring(7);
+            }
+
+            if (group != "")
+                groupList = false;
+
             rulesProcessing("", FILE_RULES, "Web#Print");
             reply += printWebString;
             reply += "<form><table>";
@@ -1211,33 +1240,70 @@ namespace WindowsRules
             // first get the list in alphabetic order
             for (byte x = 0; x <= UNIT_MAX; x++)
                 sortedIndex[x] = x;
-            sortDeviceArray();
 
-            for (byte x = 0; x < UNIT_MAX; x++)
+            if (groupList == true)
             {
-                byte index = sortedIndex[x];
-                if (Nodes[index].IP[0] != 0)
+                // Show Group list
+                sortDeviceArrayGroup(); // sort on groupname
+                String prevGroup = "?";
+                for (byte x = 0; x < UNIT_MAX; x++)
                 {
-                    String buttonclass = "";
-                    if (Settings.Name == Nodes[index].nodeName)
-                        buttonclass = "button-nodelinkA";
-                    else
-                        buttonclass = "button-nodelink";
-                    reply += "<TR><TD><a class=\"";
-                    reply += buttonclass;
-                    reply += "\" ";
-                    reply += "href='http://";
-                    reply += Nodes[index].IP[0];
-                    reply += ".";
-                    reply += Nodes[index].IP[1];
-                    reply += ".";
-                    reply += Nodes[index].IP[2];
-                    reply += ".";
-                    reply += Nodes[index].IP[3];
-                    reply += "'>";
-                    reply += Nodes[index].nodeName;
-                    reply += "</a>";
-                    reply += "<TD>";
+                    byte index = sortedIndex[x];
+                    if (Nodes[index].IP[0] != 0)
+                    {
+                        String nodegroup = Nodes[index].group;
+                        if (nodegroup != prevGroup)
+                        {
+                            prevGroup = nodegroup;
+                            reply += "<TR><TD><a class=\"";
+                            reply += "button-nodelink";
+                            reply += "\" ";
+                            reply += "href='/?group=";
+                            reply += nodegroup;
+                            reply += "'>";
+                            reply += nodegroup;
+                            reply += "</a>";
+                            reply += "<TD>";
+                        }
+                    }
+                }
+                // All nodes group button
+                reply += "<TR><TD><a class=\"button-nodelink\" href='/?group=*'>_ALL_</a><TD>";
+            }
+            else
+            {
+                sortDeviceArray();
+                for (byte x = 0; x < UNIT_MAX; x++)
+                {
+                    byte index = sortedIndex[x];
+                    if (Nodes[index].IP[0] != 0 && (group == "*" || Nodes[index].group == group))
+                    {
+                        String buttonclass = "";
+                        if (Settings.Name == Nodes[index].nodeName)
+                            buttonclass = "button-nodelinkA";
+                        else
+                            buttonclass = "button-nodelink";
+                        reply += "<TR><TD><a class=\"";
+                        reply += buttonclass;
+                        reply += "\" ";
+                        reply += "href='http://";
+                        reply += Nodes[index].IP[0];
+                        reply += ".";
+                        reply += Nodes[index].IP[1];
+                        reply += ".";
+                        reply += Nodes[index].IP[2];
+                        reply += ".";
+                        reply += Nodes[index].IP[3];
+                        if (group != "")
+                        {
+                            reply += "?group=";
+                            reply += Nodes[index].group;
+                        }
+                        reply += "'>";
+                        reply += Nodes[index].nodeName;
+                        reply += "</a>";
+                        reply += "<TD>";
+                    }
                 }
             }
             reply += "</table></form>";
@@ -1362,6 +1428,34 @@ namespace WindowsRules
                     String two = "";
                     if (Nodes[sortedIndex[innerLoop - 1]].nodeName != null)
                         two = Nodes[sortedIndex[innerLoop - 1]].nodeName;
+
+                    if (arrayLessThan(one, two))
+                    {
+                        switchArray(innerLoop);
+                    }
+                    innerLoop--;
+                }
+            }
+        }
+
+        //********************************************************************************
+        // Device Sort routine, actual sorting
+        //********************************************************************************
+        static void sortDeviceArrayGroup()
+        {
+            int innerLoop;
+            int mainLoop;
+            for (mainLoop = 1; mainLoop < UNIT_MAX; mainLoop++)
+            {
+                innerLoop = mainLoop;
+                while (innerLoop >= 1)
+                {
+                    String one = "";
+                    if (Nodes[sortedIndex[innerLoop]].group != null)
+                        one = Nodes[sortedIndex[innerLoop]].group;
+                    String two = "";
+                    if (Nodes[sortedIndex[innerLoop - 1]].group != null)
+                        two = Nodes[sortedIndex[innerLoop - 1]].group;
 
                     if (arrayLessThan(one, two))
                     {
